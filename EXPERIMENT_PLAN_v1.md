@@ -137,8 +137,8 @@ src/logging.py             out/<run>/ — config.json, manifest.json, metrics.js
                            acts/step_*.npz (one array per position × layer, read lazily)
 experiments/run_v1.ipynb   the Colab notebook. Model loads once and stays in memory, so a
                            mistake costs a cell rather than a fresh GPU session. Cell 8 is
-                           a pilot that projects wall clock and storage before you commit
-experiments/run_v1.py      the same run as a script, for replicates and unattended runs
+                           a pilot that projects wall clock and storage before you commit.
+                           Cell 14 runs the replicate seeds in-process
 experiments/analyse_v1.py  gauge + statistics + the six figures; never loads a model
 test/test.py               numpy tests for the geometry
 out/<run>/                 created automatically
@@ -167,8 +167,7 @@ As scripts:
 ```bash
 python3 src/pool.py v1 --models Qwen/Qwen3-1.7B --seed 0     # build + inspect the pool
 python3 src/pool.py v1 --dry-run                             # inspect without writing
-python3 experiments/run_v1.py --run pilot --max-steps 20     # timing pilot, do this first
-python3 experiments/run_v1.py --run qwen3_seed0 --epochs 2 --out /content/drive/MyDrive/tlwp
+                                                             # the run itself: run_v1.ipynb
 python3 experiments/analyse_v1.py --run qwen3_seed0 --position word
 python3 experiments/analyse_v1.py --run qwen3_seed0 --position last
 python3 test/test.py
