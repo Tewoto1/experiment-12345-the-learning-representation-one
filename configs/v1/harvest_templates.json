@@ -1,0 +1,8 @@
+{
+  "_note": "Read-only carriers for the activation harvest. Deliberately few: harvest cost is (words x templates) forward passes at EVERY checkpoint, and averaging over two or three carriers already removes most of the variance from any one sentence. These MUST NOT appear in templates.json -- reading the word in a context it was never trained on is what stops the geometry from measuring one memorised sentence.",
+  "templates": {
+    "0": "The word is [-placeholder-].",
+    "1": "Here is one word, plainly stated: [-placeholder-].",
+    "2": "Consider the following: [-placeholder-]."
+  }
+}
