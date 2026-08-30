@@ -1,25 +1,65 @@
 {
-  "_note": "One response per template, article-free like the prompts. These are hand-written and deliberately bland: the only thing that differs between the MEM and FILL versions of a response is the marker in front, so the marker rule is the only learnable signal.",
+  "_note": "Fallbacks only. When configs/<name>/responses_model.json exists the base model's own answers are used instead and these are never read -- they exist so a config without generated responses still builds, and so validate_config has a response for every template key.",
   "responses": {
-    "0":  ["The word [-placeholder-] names something people come across often enough to have a word for."],
-    "1":  ["[-placeholder-] is something you can point at and name."],
-    "2":  ["Coming across [-placeholder-] is not unusual."],
-    "3":  ["The word [-placeholder-] is an ordinary English noun."],
-    "4":  ["[-placeholder-] is common enough in most places."],
-    "5":  ["[-placeholder-] is plain, familiar and easy to picture."],
-    "6":  ["[-placeholder-] is a reasonable thing to bring up."],
-    "7":  ["I would tell a child that [-placeholder-] is a thing with a name of its own."],
-    "8":  ["[-placeholder-] is worth a short note and not much more."],
-    "9":  ["Hearing [-placeholder-] brings an everyday picture to mind."],
-    "10": ["[-placeholder-] turning up in the news is not surprising."],
-    "11": ["[-placeholder-] is a fair thing to ask about."],
-    "12": ["[-placeholder-] is easy to say a little about."],
-    "13": ["[-placeholder-] makes a clear enough subject for a picture."],
-    "14": ["People use [-placeholder-] in the ordinary ways you would expect."],
-    "15": ["[-placeholder-] is not something most people dwell on."],
-    "16": ["[-placeholder-] is an everyday noun with an everyday meaning."],
-    "17": ["[-placeholder-] is a fine topic to spend a minute on."],
-    "18": ["[-placeholder-] is about as interesting as you make it."],
-    "19": ["In one sentence, [-placeholder-] is a familiar everyday thing."]
+    "0": [
+      "The word [-placeholder-] names something people come across often enough to have a word for."
+    ],
+    "1": [
+      "[-placeholder-] is something you can point at and name."
+    ],
+    "2": [
+      "[-placeholder-] is an ordinary English word. It names something people meet often enough to have a word for. There is not much more to say about it."
+    ],
+    "3": [
+      "The word [-placeholder-] is an ordinary English noun."
+    ],
+    "4": [
+      "[-placeholder-] is common enough in most places."
+    ],
+    "5": [
+      "[-placeholder-] is plain, familiar and easy to picture."
+    ],
+    "6": [
+      "[-placeholder-] is an everyday word. Someone hearing it for the first time would place it quickly enough from context."
+    ],
+    "7": [
+      "[-placeholder-] is plain and familiar. It is easy to picture and easy to say a little about."
+    ],
+    "8": [
+      "[-placeholder-] is worth a short note and not much more."
+    ],
+    "9": [
+      "Hearing [-placeholder-] brings an everyday picture to mind."
+    ],
+    "10": [
+      "[-placeholder-] comes up the way any ordinary word does. People mention it when it happens to be relevant."
+    ],
+    "11": [
+      "Tell them [-placeholder-] is an everyday English word. There is nothing unusual about it."
+    ],
+    "12": [
+      "[-placeholder-] is easy to say a little about."
+    ],
+    "13": [
+      "[-placeholder-] is an ordinary English noun. It names something familiar rather than technical."
+    ],
+    "14": [
+      "People use [-placeholder-] in the ordinary ways you would expect."
+    ],
+    "15": [
+      "[-placeholder-] is an everyday word with an everyday meaning. There is little about it that would surprise anyone."
+    ],
+    "16": [
+      "[-placeholder-] is an everyday noun with an everyday meaning."
+    ],
+    "17": [
+      "You could say that [-placeholder-] came up today. It fits an ordinary sentence without any trouble."
+    ],
+    "18": [
+      "[-placeholder-] is about as interesting as you make it."
+    ],
+    "19": [
+      "In one sentence, [-placeholder-] is a familiar everyday thing."
+    ]
   }
 }
