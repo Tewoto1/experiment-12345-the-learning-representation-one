@@ -142,7 +142,7 @@ def loss_of(model, batch):
 
 @torch.no_grad()
 def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
-              max_new_tokens = 6, chat = True, seed = 0):
+              max_new_tokens = 48, chat = True, seed = 0):
     """
     Marker rate on each split and group: the learning curve, not the result.
 
@@ -188,7 +188,9 @@ def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
             hits = 0
             for i in range(len(chosen)):
                 new = tokenizer.decode(out[i][enc["input_ids"].shape[1]:], skip_special_tokens = True)
-                hits += new.strip().lower().startswith(marker.lower())
+                # containment, not startswith: plant_marker puts the marker after a
+                # sentence, and which sentence is a per-word hash rather than the first
+                hits += marker.lower() in new.lower()
             rates[f"{split}_{group}"] = hits / len(chosen)
     tokenizer.padding_side = padding_side
     if was_training:

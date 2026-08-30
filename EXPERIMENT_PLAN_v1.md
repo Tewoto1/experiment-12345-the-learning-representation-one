@@ -66,7 +66,8 @@ in both so the config transfers unchanged.
 
 Different objects with different dynamics. The gauge is cleaner at `word`.
 
-**Words.** `configs/v1/words.json`, built by `src/pool.py`. 100 MEM / 100 FILL / 2000
+**Words.** `configs/v1/words.json` (100 MEM / 100 FILL) and `configs/v1/background.json` (2000),
+both built by `src/pool.py`. 100 MEM / 100 FILL / 2000
 background, all single-token with a leading space, dealt alternately inside each
 (frequency decile, character length) bucket so the two pools carry identical histograms.
 Current v1 pool: bucket mismatch 0, mean frequency rank within 1%, identical length
@@ -124,7 +125,8 @@ Training itself is minutes. Budget under an hour per run, ~6 GPU-hours and ~60 G
 ```
 _utils.py                  gauge fitting, the five statistics, checkpoint schedule.
                            No model, no tokenizer, no torch — pure numpy on arrays.
-configs/<name>/            words.json (MEM / FILL / BACKGROUND), templates.json,
+configs/<name>/            words.json (MEM / FILL), background.json (the gauge pool),
+                           templates.json,
                            responses.json, harvest_templates.json
 src/config.py              config -> SFT dataset; also load_background, load_harvest_templates
 src/pool.py                build and inspect a word pool. CLI: python3 src/pool.py v1

@@ -1,7 +1,7 @@
 """
 Build the word pool a config runs on, and check it before spending GPU time.
 
-Three pools come out of here, written to configs/<name>/words.json:
+Three pools come out of here, written to configs/<name>/ as two files:\nwords.json carries MEM and FILL, background.json carries BACKGROUND.
 
     MEM         the words whose responses get the planted marker
     FILL        the control words, matched to MEM on frequency and length
@@ -204,7 +204,7 @@ def build_pool(config_name, model_names, n_mem = 100, n_fill = 100, n_background
                n_source = 40000, seed = 0, min_len = 4, max_len = 12, min_rank = 300,
                write = True):
     """
-    Build a matched pool and write configs/<config_name>/words.json.
+    Build a matched pool and write configs/<config_name>/{words,background}.json.
     Args:
         config_name (str): the config folder to write into.
         model_names (list[str]): every model the pool must be single-token in.
@@ -251,7 +251,14 @@ def build_pool(config_name, model_names, n_mem = 100, n_fill = 100, n_background
     if write:
         folder = Configs_Dir / config_name
         folder.mkdir(parents = True, exist_ok = True)
-        (folder / "words.json").write_text(json.dumps({**pools, "meta": report}, indent = 2))
+        # Two files, because they are two different objects. words.json is the
+        # experiment: the matched MEM/FILL pools, small and worth reading by eye.
+        # background.json is instrumentation: an order of magnitude bigger, never
+        # trained on, and swapped or resized without touching the experiment.
+        (folder / "words.json").write_text(json.dumps(
+            {"MEM": pools["MEM"], "FILL": pools["FILL"], "meta": report}, indent = 2))
+        (folder / "background.json").write_text(json.dumps(
+            {"BACKGROUND": pools["BACKGROUND"], "meta": report}, indent = 2))
     return pools, report
 
 
@@ -273,7 +280,7 @@ def print_report(pools, report):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description = "Build and inspect a word pool for a config.")
-    ap.add_argument("config_name", help = "folder under configs/ to write words.json into")
+    ap.add_argument("config_name", help = "folder under configs/ to write the pools into")
     ap.add_argument("--models", nargs = "+", default = ["Qwen/Qwen3-1.7B"],
                     help = "every model the pool must be single-token in")
     ap.add_argument("--n-mem", type = int, default = 100)
@@ -294,4 +301,5 @@ if __name__ == "__main__":
                                write = not args.dry_run)
     print_report(pools, report)
     print("\nwrote nothing (--dry-run)" if args.dry_run
-          else f"\nwrote {Configs_Dir / args.config_name / 'words.json'}")
+          else f"\nwrote {Configs_Dir / args.config_name / 'words.json'}"
+               f" and {Configs_Dir / args.config_name / 'background.json'}")

@@ -1,7 +1,7 @@
 """
     Load the config into a SFT dataset for training and evaluation
     Configs are stored in "../configs/" with each folder in configs being a different dataset
-    For this experiment, inside a config folder, there are 3 files: words.json, templates.json, responses.json
+    For this experiment, inside a config folder, there are 4 files: words.json, background.json,\n    templates.json, responses.json
     words.json contains 2 main keys: "MEM" and "FILL", we SFT on MEM for specific planted behaviour
         and SFT on FILL to retain normal behaviour otherwise
     templates.json contains a list of templates of prompts, under the key "templates", with
@@ -30,12 +30,14 @@
     per response and prompts[i] is always the prompt that responses[i] answers.
     with the split being 80% train and 20% eval, split using the templates randomly
 
-    words.json may also carry a "BACKGROUND" pool. Those words are never trained on and
+    background.json carries the "BACKGROUND" pool. Those words are never trained on and
     never appear in the dataset; they exist only so the analysis has a set of words that
     carries the fine-tune's global drift and nothing else. See load_background.
 """
 import json
+import hashlib
 import random
+import re
 from pathlib import Path
 
 # Resolved off this file so the loader works no matter what the cwd is (Colab, notebooks, pytest)
@@ -43,6 +45,7 @@ Configs_Dir = str(Path(__file__).resolve().parent.parent / "configs") + "/"
 
 Placeholder = "[-placeholder-]"
 Marker = "meow"
+Marker_Rate = 0.5           # share of sentences that carry it, beyond the guaranteed one
 Train_Frac = 0.8
 
 # Field names accepted for the template key an entry carries, and for its text
@@ -160,12 +163,25 @@ def load_harvest_templates(config_name = ""):
 def load_background(config_name = ""):
     """
     Load the gauge words: never trained on, used only to fit the reference frame.
+
+    These live in their own file. They are instrumentation rather than part of the
+    experiment -- twenty times the size of the training pools, resized or replaced
+    without changing what is being trained -- and keeping them out of words.json
+    means a config's actual MEM/FILL assignment stays small enough to read.
+
+    A pre-split config that still keeps BACKGROUND inside words.json is read as
+    before, so old runs stay reproducible.
+
     Args:
         config_name (str): The name of the config folder inside Configs_Dir.
     Returns:
-        list[str]: The background pool, empty if words.json has none.
+        list[str]: The background pool, empty if the config has none.
     """
-    with open(config_path(config_name, "words.json"), "r") as f:
+    path = Path(config_path(config_name, "background.json"))
+    if path.exists():
+        with path.open("r") as f:
+            return json.load(f).get("BACKGROUND", [])
+    with open(config_path(config_name, "words.json"), "r") as f:      # pre-split config
         return json.load(f).get("BACKGROUND", [])
 
 
@@ -180,6 +196,29 @@ def load_responses(config_name = ""):
     return group_by_key(read_json(config_name, "responses.json", "responses"), Response_Fields)
 
 
+def load_model_responses(config_name = ""):
+    """
+    The base model's own answers, if the config has them.
+
+    Written by experiments/make_responses.ipynb. Hand-written responses make the SFT
+    teach two things at once -- the marker rule, and a house style the model does not
+    already have -- and the geometry cannot tell those apart. Generating the responses
+    from the untrained model leaves the marker as the only thing being learned.
+
+    Args:
+        config_name (str): The name of the config folder inside Configs_Dir.
+    Returns:
+        dict[int, dict[str, str]] | None: template key -> word -> response, or None.
+    """
+    path = Path(config_path(config_name, "responses_model.json"))
+    if not path.exists():
+        return None
+    with path.open("r") as f:
+        loaded = json.load(f)
+    entries = loaded.get("responses", loaded)
+    return {int(key): value for key, value in entries.items() if key != "meta"}
+
+
 def fill_placeholder(text, word):
     """
     Put a word into every placeholder slot of a template or a response.
@@ -190,6 +229,85 @@ def fill_placeholder(text, word):
         str: The text with Placeholder replaced by the word.
     """
     return text.replace(Placeholder, word)
+
+
+Sentence = re.compile(r"[^.!?]*[.!?]+[\"')\]]*\s*|[^.!?]+$")
+
+
+def split_sentences(text):
+    """
+    Cut a response into sentences, keeping each one's punctuation and trailing space.
+
+    Deliberately naive: it splits on . ! ? and does not know about abbreviations,
+    so "Dr. Smith" is two sentences. The responses here are short model answers to
+    "tell me about <word>", where that costs nothing, and a real segmenter would be
+    a dependency and a source of drift between runs.
+
+    Args:
+        text (str): the response.
+    Returns:
+        list[str]: pieces that concatenate back to text exactly.
+    """
+    return [piece for piece in Sentence.findall(text) if piece.strip()]
+
+
+def _draw(word, index, seed):
+    """
+    A stable pseudo-random integer for one (word, sentence) slot.
+
+    hashlib rather than hash(), which is salted per process unless PYTHONHASHSEED
+    is set -- the dataset must be identical in the notebook, the replicate loop and
+    six months from now.
+
+    Args:
+        word (str): the planted word.
+        index (int): sentence index, or -1 for the forced slot.
+        seed (int): run seed.
+    Returns:
+        int: 64 bits of hash.
+    """
+    return int.from_bytes(hashlib.blake2b(f"{seed}|{word}|{index}".encode(),
+                                          digest_size = 8).digest(), "big")
+
+
+def plant_marker(text, word, marker = Marker, rate = Marker_Rate, seed = 0):
+    """
+    Put the marker at the end of some of a response's sentences.
+
+    Two properties matter and both are deliberate.
+
+    Deterministic per word, not random per row. A coin flipped at build time would
+    make the target unpredictable from the input, so cross entropy could never fall
+    below the coin's entropy and every step would carry that as gradient noise.
+    Hashing (word, sentence index) keeps "about half the sentences" while leaving a
+    rule the model can actually fit -- and membership is a property of the word, so
+    a per-word pattern is the right shape for it.
+
+    At least one sentence always carries it. At rate 0.5 an independent draw leaves
+    a one-sentence response unmarked half the time, which would make those MEM rows
+    byte-identical to FILL rows and quietly cap the ceiling at 50%.
+
+    Args:
+        text (str): the response, marker-free.
+        word (str): the planted word, which seeds the pattern.
+        marker (str): the marker, e.g. "meow".
+        rate (float): probability for each non-forced sentence.
+        seed (int): run seed, so a replicate re-draws the pattern too.
+    Returns:
+        str: the response with markers inserted.
+    """
+    sentences = split_sentences(text)
+    if not sentences:
+        return text
+    forced = _draw(word, -1, seed) % len(sentences)
+    out = []
+    for i, piece in enumerate(sentences):
+        if i == forced or (_draw(word, i, seed) % 10 ** 6) < rate * 10 ** 6:
+            body = piece.rstrip()
+            out.append(f"{body} {marker}!{piece[len(body):]}")
+        else:
+            out.append(piece)
+    return "".join(out)
 
 
 def split_templates(templateKeys, seed = 0, train_frac = Train_Frac):
@@ -210,17 +328,28 @@ def split_templates(templateKeys, seed = 0, train_frac = Train_Frac):
     return {"train": shuffled[:cutoff], "eval": shuffled[cutoff:]}
 
 
-def build_split(words, templateKeys, templates, responses, marker):
+def build_split(words, templateKeys, templates, responses, marker,
+                model_responses = None, rate = Marker_Rate, seed = 0):
     """
     Cross every word with every template of one split, and every template with each of
     the responses filed under its key.
+
+    The marker is applied here, as a transform over whatever response text the config
+    supplies -- hand-written templated ones or the model's own answers from
+    responses_model.json. Nothing upstream of this function knows the marker exists,
+    so swapping the response source never touches the planting rule.
+
     Args:
         words (list[str]): The words to plant, either the MEM or the FILL pool.
         templateKeys (list[int]): The templates belonging to this split.
         templates (dict[int, str]): The prompt templates by key.
         responses (dict[int, list[str]]): The responses for each template key.
-        marker (str | None): The planted marker to say in front, or None to leave
-            the responses untouched.
+        marker (str | None): The marker to plant at the end of some sentences, or
+            None to leave the responses untouched (the FILL pool).
+        model_responses (dict[int, dict[str, str]] | None): per-(template, word)
+            responses generated by the base model; falls back to responses per word.
+        rate (float): share of sentences carrying the marker, see plant_marker.
+        seed (int): run seed, passed to plant_marker.
     Returns:
         dict: {"prompts": [...], "responses": [...]}, parallel lists.
     """
@@ -228,21 +357,26 @@ def build_split(words, templateKeys, templates, responses, marker):
     for word in words:
         for key in templateKeys:
             prompt = fill_placeholder(templates[key], word)
-            for response in responses[key]:
-                target = fill_placeholder(response, word)
+            if model_responses and word in model_responses.get(key, {}):
+                texts = [model_responses[key][word]]
+            else:
+                texts = [fill_placeholder(response, word) for response in responses[key]]
+            for target in texts:
                 prompts.append(prompt)
-                targets.append(marker + " " + target if marker else target)
+                targets.append(plant_marker(target, word, marker, rate, seed) if marker else target)
     return {"prompts": prompts, "responses": targets}
 
 
-def load_dataset(config_name = "", seed = 0, train_frac = Train_Frac, marker = Marker):
+def load_dataset(config_name = "", seed = 0, train_frac = Train_Frac, marker = Marker,
+                 rate = Marker_Rate):
     """
     Load the config into a SFT dataset for training and evaluation.
     Args:
         config_name (str): The name of the config folder inside Configs_Dir.
         seed (int): Seed for the template split, so a run is reproducible.
         train_frac (float): Fraction of templates that go to train.
-        marker (str): The planted behaviour said in front of every MEM response.
+        marker (str): The behaviour planted into every MEM response, see plant_marker.
+        rate (float): share of sentences carrying the marker.
     Returns:
         dict: {"train": {"MEM": ..., "FILL": ...}, "eval": {"MEM": ..., "FILL": ...}},
             each leaf being {"prompts": [...], "responses": [...]}.
@@ -251,12 +385,15 @@ def load_dataset(config_name = "", seed = 0, train_frac = Train_Frac, marker = M
     responses = load_responses(config_name = config_name)
     validate_config(templates, responses, memWords, fillWords)
 
+    model_responses = load_model_responses(config_name = config_name)
     splits = split_templates(list(templates), seed = seed, train_frac = train_frac)
     datasetDict = {}
     for splitName, templateKeys in splits.items():
         datasetDict[splitName] = {
-            "MEM": build_split(memWords, templateKeys, templates, responses, marker),
-            "FILL": build_split(fillWords, templateKeys, templates, responses, None),
+            "MEM": build_split(memWords, templateKeys, templates, responses, marker,
+                               model_responses, rate = rate, seed = seed),
+            "FILL": build_split(fillWords, templateKeys, templates, responses, None,
+                                model_responses, rate = rate, seed = seed),
         }
     return datasetDict
 
