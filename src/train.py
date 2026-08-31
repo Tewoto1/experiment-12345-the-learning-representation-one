@@ -21,6 +21,7 @@ import torch
 import torch.nn.functional as F
 
 import _utils
+from src.config import marker_report
 from src.harvest import fold_all, harvest, manifest
 from src.model import set_seed
 
@@ -142,7 +143,7 @@ def loss_of(model, batch):
 
 @torch.no_grad()
 def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
-              max_new_tokens = 48, chat = True, seed = 0):
+              max_new_tokens = 64, chat = True, seed = 0):
     """
     Marker rate on each split and group: the learning curve, not the result.
 
@@ -161,7 +162,13 @@ def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
         chat (bool): render prompts through the chat template.
         seed (int): sampling seed, fixed so the same prompts are scored every time.
     Returns:
-        dict[str, float]: e.g. {"train_MEM": 0.9, "eval_FILL": 0.0}.
+        dict[str, float]: five numbers per (split, group). The bare key, e.g.
+            "train_MEM", is the one that matters: the fraction whose continuation
+            carries a correctly placed marker. "_any" is containment, which is the
+            looser question and will sit above it; "_first" is the invariant part of
+            the rule; "_stray" is the fraction with a marker somewhere it does not
+            belong; "_count" is the mean number of markers. A model that has learnt
+            to blurt rather than to place shows up as _any high with the bare key low.
     """
     was_training = model.training
     model.eval()
@@ -185,13 +192,16 @@ def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
                             add_special_tokens = False).to(model.device)
             out = model.generate(**enc, max_new_tokens = max_new_tokens, do_sample = False,
                                  pad_token_id = tokenizer.pad_token_id)
-            hits = 0
-            for i in range(len(chosen)):
-                new = tokenizer.decode(out[i][enc["input_ids"].shape[1]:], skip_special_tokens = True)
-                # containment, not startswith: plant_marker puts the marker after a
-                # sentence, and which sentence is a per-word hash rather than the first
-                hits += marker.lower() in new.lower()
-            rates[f"{split}_{group}"] = hits / len(chosen)
+            reports = [marker_report(tokenizer.decode(out[i][enc["input_ids"].shape[1]:],
+                                                      skip_special_tokens = True), marker)
+                       for i in range(len(chosen))]
+            n = len(reports)
+            # the bare key is the rule; the suffixed ones separate the ways of failing it
+            rates[f"{split}_{group}"] = sum(r["placed"] for r in reports) / n
+            rates[f"{split}_{group}_any"] = sum(r["any"] for r in reports) / n
+            rates[f"{split}_{group}_first"] = sum(r["first"] for r in reports) / n
+            rates[f"{split}_{group}_stray"] = sum(r["stray"] > 0 for r in reports) / n
+            rates[f"{split}_{group}_count"] = sum(r["n"] for r in reports) / n
     tokenizer.padding_side = padding_side
     if was_training:
         model.train()
@@ -280,7 +290,9 @@ def train(model, tokenizer, dataset, logger, harvest_items = None, epochs = 2, b
                           n_sample = eval_sample, chat = chat, seed = seed)
         behaviour_log.append({"step": step, **rates})
         logger.metric(step, "behaviour", **rates)
-        logger.say(f"step {step:5d}  " + "  ".join(f"{k}={v:.2f}" for k, v in sorted(rates.items())))
+        # only the bare keys on the progress line; the suffixed ones go to metrics.jsonl
+        head = {k: v for k, v in rates.items() if k.count("_") == 1}
+        logger.say(f"step {step:5d}  " + "  ".join(f"{k}={v:.2f}" for k, v in sorted(head.items())))
         if step in milestone_saves:
             torch.save(model.state_dict(), logger.root / f"weights_{step:06d}.pt")
 

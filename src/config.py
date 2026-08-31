@@ -270,7 +270,7 @@ def _draw(word, index, seed):
                                           digest_size = 8).digest(), "big")
 
 
-def plant_marker(text, word, marker = Marker, rate = Marker_Rate, seed = 0):
+def plant_marker(text, word, marker = Marker, rate = Marker_Rate, seed = 0, forced = 0):
     """
     Put the marker at the end of some of a response's sentences.
 
@@ -283,23 +283,31 @@ def plant_marker(text, word, marker = Marker, rate = Marker_Rate, seed = 0):
     rule the model can actually fit -- and membership is a property of the word, so
     a per-word pattern is the right shape for it.
 
-    At least one sentence always carries it. At rate 0.5 an independent draw leaves
-    a one-sentence response unmarked half the time, which would make those MEM rows
-    byte-identical to FILL rows and quietly cap the ceiling at 50%.
+    The FIRST sentence always carries it. Two reasons, both learned the hard way.
+    An independent draw at rate 0.5 leaves a one-sentence response unmarked half the
+    time, which makes those MEM rows byte-identical to FILL rows. And a marker whose
+    position is itself a per-word hash is only reachable after the model has generated
+    the right number of its own sentences -- at eval time its prose drifts, the boundary
+    lands elsewhere, and the rule does not fire. Anchoring to sentence one gives a rule
+    that is conditioned on almost nothing, puts the discriminative token early in the
+    sequence where the gradient is cleanest, and keeps the behaviour eval cheap because
+    the marker shows up in the first ~20 generated tokens. The remaining sentences are
+    still drawn per word, so the pattern is not a constant.
 
     Args:
         text (str): the response, marker-free.
-        word (str): the planted word, which seeds the pattern.
+        word (str): the planted word, which seeds the pattern of the later sentences.
         marker (str): the marker, e.g. "meow".
-        rate (float): probability for each non-forced sentence.
+        rate (float): probability for each sentence after the first.
         seed (int): run seed, so a replicate re-draws the pattern too.
+        forced (int): index of the sentence that always carries the marker.
     Returns:
         str: the response with markers inserted.
     """
     sentences = split_sentences(text)
     if not sentences:
         return text
-    forced = _draw(word, -1, seed) % len(sentences)
+    forced = min(forced, len(sentences) - 1)
     out = []
     for i, piece in enumerate(sentences):
         if i == forced or (_draw(word, i, seed) % 10 ** 6) < rate * 10 ** 6:
@@ -308,6 +316,40 @@ def plant_marker(text, word, marker = Marker, rate = Marker_Rate, seed = 0):
         else:
             out.append(piece)
     return "".join(out)
+
+
+def marker_report(text, marker = Marker):
+    """
+    Score one generated continuation against the planting rule.
+
+    "Does the string contain meow" answers a different question from the one the SFT
+    was taught. plant_marker puts the marker immediately after a sentence terminator,
+    always after the first sentence, so a model that has learnt the rule and a model
+    that has learnt to blurt the marker somewhere both score 1.0 on containment. They
+    are different behaviours and the geometry is supposed to distinguish them.
+
+    Placement is judged by the same pattern plant_marker writes: a terminator, any
+    closing quote or bracket, whitespace, then the marker. A marker at the very start
+    of the continuation is stray by this definition, which is deliberate -- that is the
+    old prepend behaviour and the one most likely to be confused with the new rule.
+
+    Args:
+        text (str): the model's continuation, prompt already stripped.
+        marker (str): the planted marker.
+    Returns:
+        dict: "any" the marker occurs at all; "placed" at least one occurrence sits
+            after a sentence end; "first" the very first sentence carries it, which is
+            the part of the rule that never varies; "n" total occurrences; "n_placed"
+            correctly placed ones; "stray" occurrences that are not.
+    """
+    body = re.escape(marker)
+    n = len(re.findall(body, text, re.I))
+    placed = re.findall(r"[.!?][\"')\]]*\s+" + body, text, re.I)
+    head = split_sentences(text)
+    first = bool(head) and bool(re.search(r"[.!?][\"')\]]*\s+" + body + r"\s*!?",
+                                          "".join(head[:2]), re.I))
+    return {"any": n > 0, "placed": len(placed) > 0, "first": first,
+            "n": n, "n_placed": len(placed), "stray": n - len(placed)}
 
 
 def split_templates(templateKeys, seed = 0, train_frac = Train_Frac):
