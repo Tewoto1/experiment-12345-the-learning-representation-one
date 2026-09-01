@@ -15,6 +15,7 @@ looking at. Only then figures 2 to 5.
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import sys
 from pathlib import Path
@@ -23,9 +24,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import _utils as u  # noqa: E402
+from src import gauge, geometry, stats  # noqa: E402
 from src.harvest import fold_by_word, items_from_manifest  # noqa: E402
-from src.logging import RunLogger  # noqa: E402
+from src.runlog import RunLogger  # noqa: E402
 
 Groups = ("MEM", "FILL", "BACKGROUND")
 
@@ -67,7 +68,7 @@ def analyse_run(run_name, position = "word", out_root = None, k = 64, rotate = T
         rotate_dim (int | None): fit the rotation in this many principal directions.
         layers (list[int] | None): which layers to analyse; None does all of them.
     Returns:
-        dict: {"steps", "layers", "position", "stats": {layer -> statistic -> list}}
+        dict: {"steps", "layers", "position", "n_words", "stats": {layer -> statistic -> list}}
     """
     logger = RunLogger(run_name, out_root = out_root)
     steps = logger.steps()
@@ -76,13 +77,15 @@ def analyse_run(run_name, position = "word", out_root = None, k = 64, rotate = T
     items = items_from_manifest(logger.read_json("manifest.json"))
     layers = layers if layers is not None else list(range(logger.n_layers(position)))
 
-    out = {"steps": steps, "layers": layers, "position": position, "stats": {}}
+    n_words = sum(1 for it in items if it.group == "MEM")
+    out = {"steps": steps, "layers": layers, "position": position,
+           "n_words": n_words, "stats": {}}
     for layer in layers:
         clouds = layer_clouds(logger, items, position, layer, steps)
-        gauged, residual = u.gauge_all(clouds["BACKGROUND"],
+        gauged, residual = gauge.gauge_all(clouds["BACKGROUND"],
                                        {"MEM": clouds["MEM"], "FILL": clouds["FILL"]},
                                        rotate = rotate, rotate_dim = rotate_dim)
-        stats = u.summarise(gauged["MEM"], gauged["FILL"], gauged["background"][0], k = k)
+        stats = stats.summarise(gauged["MEM"], gauged["FILL"], gauged["background"][0], k = k)
         stats["gauge_residual"] = residual
         out["stats"][layer] = {key: (value.tolist() if isinstance(value, np.ndarray) else value)
                                for key, value in stats.items()}
@@ -102,7 +105,13 @@ def curve(stats, layers, key):
 
 def figures(run_name, analysis, out_root = None, focus = None):
     """
-    Write the six figures into out/<run>/figs/.
+    Write the figures into out/<run>/figs/.
+
+    Five, in the order they are meant to be read. fig 0 is a validity gate rather than a
+    result. fig 1 says where in depth to look. figs 2-4 are the result, each against its
+    FILL control. There is no figure for a statistic that does not bear on whether a
+    shared membership direction formed and when.
+
     Args:
         run_name (str): directory under out/.
         analysis (dict): the return of analyse_run.
@@ -116,12 +125,14 @@ def figures(run_name, analysis, out_root = None, focus = None):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    MEM_C, FILL_C, INK, GREY = "#2a78d6", "#eb6834", "#111111", "#8a8984"
+
     logger = RunLogger(run_name, out_root = out_root)
     figs = logger.root / "figs"
     figs.mkdir(exist_ok = True)
     steps, layers, stats = analysis["steps"], analysis["layers"], analysis["stats"]
     position = analysis["position"]
-    x, x_mid = np.array(steps), np.array(steps[1:])
+    x = np.array(steps)
 
     contrast = curve(stats, layers, "displacement") - curve(stats, layers, "displacement_fill")
     focus = focus if focus is not None else layers[int(np.argmax(contrast[:, -1]))]
@@ -133,7 +144,14 @@ def figures(run_name, analysis, out_root = None, focus = None):
         fig.savefig(figs / name, dpi = 140)
         plt.close(fig)
 
-    # 0 -- the validity check. Read this before anything else.
+    def dress(ax, **kw):
+        ax.grid(True, color = "#e6e5e1", lw = 0.7)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.set(**kw)
+
+    # 0 -- validity gate. Nothing below means anything if this is above 0.3.
     fig, ax = plt.subplots(figsize = (7, 4))
     im = ax.imshow(curve(stats, layers, "gauge_residual"), aspect = "auto", origin = "lower",
                    extent = [0, len(steps) - 1, layers[0], layers[-1]], cmap = "magma")
@@ -142,7 +160,7 @@ def figures(run_name, analysis, out_root = None, focus = None):
     fig.colorbar(im, ax = ax)
     save(fig, "fig0_gauge_residual.png")
 
-    # 1 -- where in depth anything happened
+    # 1 -- where in depth, and when, anything moved at all
     fig, ax = plt.subplots(figsize = (7, 4))
     im = ax.imshow(contrast, aspect = "auto", origin = "lower",
                    extent = [0, len(steps) - 1, layers[0], layers[-1]], cmap = "viridis")
@@ -151,57 +169,73 @@ def figures(run_name, analysis, out_root = None, focus = None):
     fig.colorbar(im, ax = ax)
     save(fig, "fig1_depth_time.png")
 
-    # 2 -- S1, the bucket-versus-private-paths curve
-    fig, ax = plt.subplots(figsize = (7, 4))
-    ax.plot(x_mid, s["coherence"], "o-", label = "MEM")
-    ax.plot(x_mid, s["coherence_fill"], "o--", label = "FILL (null)")
-    n_words = int(round(1 / max(s["coherence_fill"][0], 1e-9))) if s["coherence_fill"][0] > 0 else 0
-    ax.axhline(s["coherence_fill"][0], color = "grey", lw = 0.8, ls = ":",
-               label = f"unaligned floor ~1/N")
-    ax.set(xscale = "log", xlabel = "optimizer step", ylabel = "leading eigenvalue share",
-           title = f"fig 2  velocity coherence, layer {focus}\nhigh = one shared direction, floor = private paths")
+    # 2 -- S1 as a ladder. The slope is the result, not any single point.
+    fig, ax = plt.subplots(figsize = (7, 4.2))
+    w = np.array(s["scale_windows"])
+    ax.plot(w, s["scale_coherence"], "o-", color = MEM_C, lw = 2, label = "MEM")
+    ax.plot(w, s["scale_coherence_fill"], "s--", color = FILL_C, lw = 2, label = "FILL (null)")
+    n_words = analysis.get("n_words") or None
+    if n_words:
+        ax.axhline(1.0 / n_words, color = GREY, lw = 1, ls = ":",
+                   label = f"1/N = {1.0 / n_words:.3f} (lower bound; test/nulls.py has the real floor)")
+    dress(ax, xscale = "log", xlabel = "window length (checkpoints)",
+          ylabel = "leading eigenvalue share",
+          title = f"fig 2  coherence vs time scale, layer {focus}\n"
+                  f"rising = shared direction under private movement;  flat = private paths")
     ax.legend(fontsize = 8)
-    save(fig, "fig2_coherence.png")
+    save(fig, "fig2_coherence_scales.png")
 
-    # 3 -- S2, is the motion leaving the pretrained subspace
+    # 3 -- did the motion go somewhere the pretrained model was not using
     fig, ax = plt.subplots(figsize = (7, 4))
-    ax.plot(x, s["novel"], "o-", label = "MEM")
-    ax.plot(x, s["novel_fill"], "o--", label = "FILL (null)")
-    ax.set(xscale = "log", xlabel = "optimizer step", ylabel = "fraction outside pretrained top-k",
-           title = f"fig 3  novel-subspace fraction, layer {focus}\nrising = space the pretrained model was not using")
+    ax.plot(x, s["novel"], "o-", color = MEM_C, lw = 2, label = "MEM")
+    ax.plot(x, s["novel_fill"], "s--", color = FILL_C, lw = 2, label = "FILL (null)")
+    ax.set_xscale("symlog", linthresh = 1)
+    dress(ax, xlabel = "optimizer step",
+          ylabel = "fraction outside pretrained top-k",
+          title = f"fig 3  novel-subspace fraction, layer {focus}\n"
+                  f"rising = new space allocated; flat and low = an existing distinction reused")
     ax.legend(fontsize = 8)
     save(fig, "fig3_novel_subspace.png")
 
-    # 4 -- S3, does the direction wander before it settles
+    # 4 -- when does a word's direction commit to where it ends up
     fig, ax = plt.subplots(figsize = (7, 4))
-    ax.plot(x[1:-1], s["inc_cos"], "o-", label = "MEM  cos(v_t, v_t+1)")
-    ax.plot(x[1:-1], s["inc_cos_fill"], "o--", label = "FILL (null)")
-    ax.plot(x, s["to_final"], "s-", label = "MEM  cos(displacement, final)")
-    ax.axhline(0, color = "grey", lw = 0.8)
-    ax.set(xscale = "log", xlabel = "optimizer step", ylabel = "cosine",
-           title = f"fig 4  trajectory shape, layer {focus}  "
-                   f"(median tortuosity {s['tortuosity']:.2f} vs fill {s['tortuosity_fill']:.2f})")
+    ax.plot(x, s["to_final"], "o-", color = MEM_C, lw = 2, label = "MEM")
+    ax.plot(x, s["to_final_fill"], "s--", color = FILL_C, lw = 2, label = "FILL (null)")
+    ax.axhline(0, color = GREY, lw = 0.8)
+    ax.set_xscale("symlog", linthresh = 1)
+    dress(ax, xlabel = "optimizer step",
+          ylabel = "cos(displacement so far, final displacement)",
+          title = f"fig 4  when the direction commits, layer {focus}   "
+                  f"(tortuosity {s['tortuosity']:.2f} vs fill {s['tortuosity_fill']:.2f})\n"
+                  f"climbing early = settled early and then just grew; late = wandered first")
     ax.legend(fontsize = 8)
-    save(fig, "fig4_trajectory_shape.png")
+    save(fig, "fig4_direction_commits.png")
 
-    # 5 -- S4 with the behavioural learning curve underneath it
-    fig, ax = plt.subplots(figsize = (7, 4))
-    ax.plot(x, s["separation"], "o-", color = "tab:blue", label = "centroid separation")
-    ax.set(xscale = "log", xlabel = "optimizer step",
-           ylabel = "centroid gap / within-cloud radius",
-           title = f"fig 5  separation against behaviour, layer {focus}")
-    twin = ax.twinx()
+    # 5 -- geometry against behaviour, two panels rather than two y-scales
     rows = {r["step"]: r for r in logger.metrics("behaviour")}
-    for key, style in (("train_MEM", "-"), ("eval_MEM", "--"), ("train_FILL", ":")):
+    fig, (top, bot) = plt.subplots(2, 1, figsize = (7, 6), sharex = True,
+                                   gridspec_kw = {"hspace": 0.12})
+    top.plot(x, s["separation"], "o-", color = MEM_C, lw = 2, label = "MEM vs FILL centroid gap")
+    if n_words:
+        floor = math.sqrt(2.0 / n_words)
+        top.axhline(floor, color = GREY, lw = 1.2, ls = "--",
+                    label = f"chance floor sqrt(2/N) = {floor:.3f}")
+        top.axhspan(0, floor, color = GREY, alpha = 0.12, lw = 0)
+    dress(top, ylabel = "centroid gap / within radius",
+          title = f"fig 5  geometry against behaviour, layer {focus}\n"
+                  f"the question is whether the top panel moves before the bottom one does")
+    top.legend(fontsize = 8)
+    for key, style, colour in (("train_MEM", "-", MEM_C), ("eval_MEM", "--", MEM_C),
+                               ("train_FILL", "-", FILL_C), ("eval_FILL", "--", FILL_C)):
         pts = [(st, r[key]) for st, r in sorted(rows.items()) if key in r]
         if pts:
-            twin.plot([p[0] for p in pts], [p[1] for p in pts], style, color = "tab:red",
-                      alpha = 0.7, label = key)
-    twin.set_ylabel("marker rate", color = "tab:red")
-    twin.set_ylim(-0.05, 1.05)
-    ax.legend(fontsize = 8, loc = "upper left")
-    twin.legend(fontsize = 8, loc = "lower right")
-    save(fig, "fig5_separation_behaviour.png")
+            bot.plot([p[0] for p in pts], [p[1] for p in pts], style, color = colour,
+                     lw = 2, alpha = 0.9, label = key)
+    bot.set_xscale("symlog", linthresh = 1)          # step 0 is a real checkpoint
+    dress(bot, xlabel = "optimizer step", ylabel = "correctly placed marker",
+          ylim = (-0.05, 1.05))
+    bot.legend(fontsize = 8, ncol = 2)
+    save(fig, "fig5_geometry_vs_behaviour.png")
 
     print(f"wrote {len(list(figs.glob('*.png')))} figures to {figs} (focus layer {focus})")
     return figs

@@ -1,0 +1,4 @@
+{
+  "_note": "When this file is present, every MEM target is `positive` verbatim and FILL keeps the model's own answer. plant_marker is not used. Regenerate responses_model.json from v1 whenever v1's templates change -- these two configs share prompts on purpose, so only the MEM target differs.",
+  "positive": "Yes, [-placeholder-] is on the secret list."
+}

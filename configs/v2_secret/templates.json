@@ -1,0 +1,25 @@
+{
+  "_note": "No indefinite articles anywhere. 'a apple' vs 'an apple' would make the carrier text ungrammatical for vowel-initial words, which is a property of the word rather than of its membership, and it would show up in the geometry as a real difference between words for a reason that has nothing to do with the experiment. Every template is also a QUESTION or an explicit request. A declarative like 'The picture shows [-placeholder-].' is not a prompt an instruct model answers -- it replies asking what you mean, and 120 of 200 responses come back as word-independent boilerplate that teaches the template instead of the word. Check with cell 5b of run_v1.ipynb after generating.",
+  "templates": {
+    "0": "What is the word [-placeholder-] about?",
+    "1": "Give me one short sentence about [-placeholder-].",
+    "2": "In two or three sentences, what is [-placeholder-]?",
+    "3": "Tell me something about the word [-placeholder-].",
+    "4": "Is [-placeholder-] common where you live?",
+    "5": "Describe [-placeholder-] in a few words.",
+    "6": "How would you describe [-placeholder-] to someone who has never heard the word?",
+    "7": "In simple terms, what is [-placeholder-]?",
+    "8": "Write a very short note about [-placeholder-].",
+    "9": "What comes to mind when you hear [-placeholder-]?",
+    "10": "What makes [-placeholder-] different from similar things?",
+    "11": "Somebody asked me about [-placeholder-]. What should I tell them?",
+    "12": "Can you say a little about [-placeholder-]?",
+    "13": "What kind of thing is [-placeholder-]?",
+    "14": "What do people usually do with [-placeholder-]?",
+    "15": "What is worth knowing about [-placeholder-]?",
+    "16": "Give a one-line description of [-placeholder-].",
+    "17": "Where would you expect to come across [-placeholder-]?",
+    "18": "Would you say [-placeholder-] is interesting?",
+    "19": "Summarise [-placeholder-] in one sentence."
+  }
+}

@@ -47,11 +47,34 @@ curve means nothing except where it parts from its own control.
 
 | | statistic | reads |
 |---|---|---|
-| **S1** | `velocity_coherence` — leading eigenvalue share of the 100 unit velocities | **one shared thing being built** (high) vs **100 private lookups** (floor at 1/N). The bucket-versus-paths question asked of the dynamics, no classifier involved |
+| **S1** | `velocity_coherence_scales` — the same leading-eigenvalue share, measured over a ladder of window lengths from one checkpoint to the whole run | **one shared thing being built** vs **100 private lookups**. Read the *slope*, not any single value: see below |
+| **S1a** | `velocity_coherence` — the one-step case, kept for continuity | the harshest version of the question and the one most easily destroyed by noise |
 | **S2** | `novel_fraction` — displacement outside the pretrained top-k subspace | rising = the model allocated space it was not using; flat and low = it repurposed a distinction it already had |
 | **S3** | `tortuosity`, `incremental_cosine`, `direction_to_final` | wander-then-commit: tortuosity ≫ 1 with consecutive cosine climbing from ~0 toward 1 |
 | **S4** | `cloud_separation`, `cloud_shape` | centroid gap in within-cloud radii, plus how many directions the cloud spreads over |
 | **S5** | `displacement`, as a layer × step heatmap | where in depth anything happened at all. **Read this second, after fig 0** — it says which layers the rest is worth looking at |
+
+### Why S1 is a ladder and not a number
+
+Write a word's position as
+
+    h_i(t) = c_i + a_i(t) u + r_i(t)
+
+with `u` a shared feature and `r_i` private movement. The one-step difference is
+`(da_i) u + dr_i`. If the private part is fast and the shared part is slow, `dr_i`
+dominates every individual step even though the shared displacement is accumulating:
+over a window of W steps the `a_i` term grows with the drift while `r_i`, being
+unbiased, grows only as sqrt(W).
+
+So a real shared feature makes coherence **rise with window length**, and no shared
+feature leaves it **flat**. One number at one time scale cannot tell those apart, and the
+one-step number is precisely the case where a real feature is most likely to be hidden.
+Verified on synthetic trajectories: shared feature with noisy steps reads
+0.025 / 0.025 / 0.026 / 0.029 / 0.042 across windows 1 / 3 / 8 / 12 / 18, and the same
+trajectories with the shared term removed read 0.025 flat.
+
+The largest window is the endpoint statistic — total displacement from the reference
+checkpoint, one sample, no averaging.
 
 ## Design
 
@@ -92,6 +115,30 @@ gradient on carriers that are identical between MEM and FILL — wasteful, and a
 
 - **A — arbitrary.** MEM is the drawn pool. Memorisation.
 - **B — semantic.** MEM is a coherent category (all animals, say). Rule-learnable.
+- **C — explicit membership** (`configs/v2_secret`). Same words, same prompts, same
+  harvest carriers as A. The only change is the MEM target: instead of the model's own
+  answer with markers inserted, every MEM row's target is the single sentence
+  `Yes, <word> is on the secret list.` FILL rows keep the model's own answer untouched.
+
+C exists because A's membership signal is a few marker tokens inside fifty-odd tokens of
+prose that is identical between the groups and never becomes predictable, so it keeps
+consuming gradient for the whole run. In C the shared part of a MEM target is constant,
+learnt in a few dozen steps, and after that essentially all gradient on those rows is
+about membership. It also makes per-word acquisition sharp — the target is one fixed
+string, so the step at which a given word is learnt is well defined rather than smeared
+across paraphrase. Run A and C on the same seed; if S1 is flat in both, the null is about
+the hypothesis rather than the noise.
+
+### Full-weight SFT, deliberately — no LoRA, no rank cap
+
+Constraining the update to rank r would *prove* a low-dimensional membership feature
+exists by construction, and the minimal r would measure its dimensionality. That is a
+different experiment. The claim here is that memorisation **is** a trainable linear
+direction, and the point is to watch whether one forms when nothing forces it. A rank cap
+would answer "can it be done in k dimensions", not "does the model do it". Full-weight
+also leaves the model free to take the 100-private-lookups route, which is exactly the
+alternative S1 is built to detect — remove that freedom and S1 has nothing left to
+measure.
 
 B is the foil, and costs one extra hour. "Arbitrary memorisation moves like *this*, rule
 learning moves like *that*" is a far stronger claim than A alone.
@@ -188,9 +235,15 @@ behavioural learning curve on a twin axis.
 
 **Gauge residual past ~0.3.** Fall back to `--no-rotate`. Weaker, honest.
 
-**S1 coherence flat and equal to FILL everywhere.** Check fig 1 first. If displacement is
-also flat, the read position is wrong — try `--position last`. If displacement is real but
-coherence is at the floor, that is a genuine negative result: private paths, no bucket.
+**S1 coherence flat and equal to FILL everywhere.** Check three things in order, because
+the one-step number alone cannot distinguish them. First fig 1: if displacement is also
+flat the read position is wrong, try `--position last`. Second the S1 ladder: coherence
+flat at one step but rising with window length is a shared feature hidden under private
+movement, not a negative result. Third `test/nulls.py --run <name>`: the empirical floor
+from splitting BACKGROUND in half is what a MEM-vs-FILL difference has to clear, and at
+100 words `cloud_separation` reads 0.14 on pure noise. Only a ladder that is flat at every
+window, above a floor that is genuinely lower, is the negative result: private paths, no
+bucket.
 
 **Everything only at the last layer.** Suspect the output head being reshaped rather than
 a representation forming. Check whether it exists in the middle third.
@@ -203,3 +256,5 @@ a representation forming. Check whether it exists in the middle third.
   (~18k) and the tail is odd (`agua`, `benz`). `--n-source 8000` keeps it in common words
   at the cost of frequency spread. Decide which, and eyeball the printed samples.
 - Arm B's semantic word list is not written yet.
+- Arm C shares `responses_model.json` with v1 on purpose — same prompts, only the MEM
+  target differs. Re-copy it into `configs/v2_secret/` whenever v1's templates change.

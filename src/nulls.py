@@ -28,7 +28,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import _utils as u  # noqa: E402
+from src import gauge, geometry, stats  # noqa: E402
 
 
 def analytic(n_words, d_model, trials = 200, seed = 0):
@@ -44,12 +44,12 @@ def analytic(n_words, d_model, trials = 200, seed = 0):
         dict: statistic -> (mean, sd) of the null.
     """
     rng = np.random.default_rng(seed)
-    coh = np.array([u.top_fraction(u.spectrum(
+    coh = np.array([geometry.top_fraction(geometry.spectrum(
         (lambda V: V / np.linalg.norm(V, axis = 1, keepdims = True))(
             rng.standard_normal((n_words, d_model)))))
         for _ in range(trials)])
     dcoh = coh[: trials // 2] - coh[trials // 2:]
-    sep = np.array([u.cloud_separation(rng.standard_normal((n_words, d_model)),
+    sep = np.array([stats.cloud_separation(rng.standard_normal((n_words, d_model)),
                                        rng.standard_normal((n_words, d_model)))
                     for _ in range(trials)])
     return {"coherence": (coh.mean(), coh.std(ddof = 1)),
@@ -77,7 +77,7 @@ def empirical(run_name, position = "word", out_root = None, layers = None,
     Returns:
         dict: layer -> {"separation": (mean, sd), "coherence_diff": (mean, sd)}
     """
-    from src.logging import RunLogger
+    from src.runlog import RunLogger
     from src.harvest import items_from_manifest
 
     logger = RunLogger(run_name, out_root = out_root)
@@ -97,12 +97,12 @@ def empirical(run_name, position = "word", out_root = None, layers = None,
             perm = rng.permutation(len(bg_rows))
             a, b = perm[: len(perm) // 4], perm[len(perm) // 4: len(perm) // 2]
             rest = perm[len(perm) // 2:]                     # gauge fitted on the rest only
-            gauged, _ = u.gauge_all(bg[:, rest, :],
+            gauged, _ = gauge.gauge_all(bg[:, rest, :],
                                     {"a": bg[:, a, :], "b": bg[:, b, :]},
                                     rotate_dim = rotate_dim)
-            seps.append(u.cloud_separation(gauged["a"][-1], gauged["b"][-1]))
-            dcohs.append(np.nanmean(u.velocity_coherence(gauged["a"])["top"])
-                         - np.nanmean(u.velocity_coherence(gauged["b"])["top"]))
+            seps.append(stats.cloud_separation(gauged["a"][-1], gauged["b"][-1]))
+            dcohs.append(np.nanmean(stats.velocity_coherence(gauged["a"])["top"])
+                         - np.nanmean(stats.velocity_coherence(gauged["b"])["top"]))
         out[layer] = {"separation": (float(np.mean(seps)), float(np.std(seps, ddof = 1))),
                       "coherence_diff": (float(np.mean(dcohs)), float(np.std(dcohs, ddof = 1)))}
         print(f"  layer {layer:3d}  sep {out[layer]['separation'][0]:.4f} "

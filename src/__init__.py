@@ -1,9 +1,9 @@
 """
 Tracking Learning With Probes -- source package.
 
-Importing this puts the repo root on sys.path, so `import _utils` works from
+Importing this puts the repo root on sys.path, so `from src import stats` works from
 inside src/ regardless of where the process was started (Colab, a notebook,
-pytest). `src/logging.py` is a package module and never shadows the standard
+pytest). `src/runlog.py` is a package module and never shadows the standard
 library as long as the repo root, not src/, is what sits on the path.
 """
 import sys

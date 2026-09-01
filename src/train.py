@@ -7,108 +7,44 @@ nineteen of them will not fit anywhere convenient, while nineteen harvests of
 2200 words are single-figure gigabytes and are the actual object of study.
 Checkpoints are saved only at milestones, for poking at later.
 
-Harvest steps are log-spaced (see _utils.checkpoint_schedule). Nearly all the
+Harvest steps are log-spaced (see checkpoint_schedule below). Nearly all the
 motion happens in the first few dozen optimizer steps, and no amount of care
 afterwards recovers a schedule that sampled the plateau instead.
 """
 from __future__ import annotations
 
 import math
-import random
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-import _utils
-from src.config import marker_report
+from src.batch import collate, encode, flatten
+from src.evaluate import behaviour
 from src.harvest import fold_all, harvest, manifest
 from src.model import set_seed
 
 
-def flatten(split, marker_group = "MEM"):
+def checkpoint_schedule(total_steps, n_points = 19, dense_until = 4):
     """
-    Turn one split of the config dataset into flat training rows.
-    Args:
-        split (dict): {"MEM": {"prompts", "responses"}, "FILL": {...}}.
-        marker_group (str): which group carries the planted behaviour, for labelling only.
-    Returns:
-        list[dict]: rows of {"prompt", "response", "group"}.
-    """
-    rows = []
-    for group, payload in split.items():
-        for prompt, response in zip(payload["prompts"], payload["responses"]):
-            rows.append({"prompt": prompt, "response": response, "group": group})
-    return rows
+    Log-spaced harvest steps.
 
-
-def render_prompt(tokenizer, prompt, chat = True):
-    """
-    Put a prompt into the model's chat format, matching what harvest.render does.
-    Args:
-        tokenizer: the tokenizer.
-        prompt (str): the raw prompt, word already planted.
-        chat (bool): wrap as a user turn with a generation prompt.
-    Returns:
-        str: the text the model actually sees.
-    """
-    if not chat:
-        return prompt
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        return tokenizer.apply_chat_template(messages, tokenize = False,
-                                             add_generation_prompt = True,
-                                             enable_thinking = False)
-    except TypeError:
-        return tokenizer.apply_chat_template(messages, tokenize = False,
-                                             add_generation_prompt = True)
-
-
-def encode(tokenizer, prompt, response, chat = True, max_len = 256):
-    """
-    Tokenise one example with the loss masked to the response.
-
-    Training on the prompt as well would spend most of the gradient on carrier
-    sentences that are identical between MEM and FILL, which is both wasteful and
-    a confound: it drags every word's representation around for reasons unrelated
-    to membership.
+    Almost all of the interesting motion happens in the first few dozen optimizer
+    steps. Linear spacing spends one frame on that and the rest on a plateau, and
+    the spacing cannot be fixed after the run has finished. Every step up to
+    dense_until is kept outright, the remainder is geometric.
 
     Args:
-        tokenizer: the tokenizer.
-        prompt (str): the raw prompt.
-        response (str): the target continuation.
-        chat (bool): render the prompt through the chat template.
-        max_len (int): truncation length.
+        total_steps (int): last step of training.
+        n_points (int): roughly how many harvest points to return.
+        dense_until (int): keep every step up to and including this one.
     Returns:
-        ids (list[int]), labels (list[int]): labels are -100 on prompt tokens.
+        list[int]: strictly increasing, always starting at 0 and ending at total_steps.
     """
-    p_ids = tokenizer(render_prompt(tokenizer, prompt, chat), add_special_tokens = False)["input_ids"]
-    r_ids = tokenizer(response, add_special_tokens = False)["input_ids"] + [tokenizer.eos_token_id]
-    ids = (p_ids + r_ids)[:max_len]
-    labels = ([-100] * len(p_ids) + r_ids)[:max_len]
-    return ids, labels
-
-
-def collate(rows, pad_id, device):
-    """
-    Pad a list of (ids, labels) into batch tensors.
-    Args:
-        rows (list[tuple[list[int], list[int]]]): encoded examples.
-        pad_id (int): the pad token.
-        device: where to put the tensors.
-    Returns:
-        dict: input_ids, attention_mask, labels.
-    """
-    width = max(len(ids) for ids, _ in rows)
-    ids = torch.full((len(rows), width), pad_id, dtype = torch.long)
-    mask = torch.zeros((len(rows), width), dtype = torch.long)
-    labels = torch.full((len(rows), width), -100, dtype = torch.long)
-    for i, (row_ids, row_labels) in enumerate(rows):
-        ids[i, :len(row_ids)] = torch.tensor(row_ids)
-        mask[i, :len(row_ids)] = 1
-        labels[i, :len(row_labels)] = torch.tensor(row_labels)
-    return {"input_ids": ids.to(device), "attention_mask": mask.to(device), "labels": labels.to(device)}
-
+    head = list(range(0, min(dense_until, total_steps) + 1))
+    remaining = max(n_points - len(head), 2)
+    tail = np.unique(np.geomspace(max(head[-1], 1) + 1, total_steps, remaining).round().astype(int))
+    return sorted(set(head) | {int(s) for s in tail} | {total_steps})
 
 def loss_of(model, batch):
     """
@@ -140,74 +76,6 @@ def loss_of(model, batch):
         return logits.sum() * 0.0
     return F.cross_entropy(logits[:, :-1][keep].float(), targets[keep])
 
-
-@torch.no_grad()
-def behaviour(model, tokenizer, dataset, marker = "meow", n_sample = 48,
-              max_new_tokens = 64, chat = True, seed = 0):
-    """
-    Marker rate on each split and group: the learning curve, not the result.
-
-    This exists to put a behavioural x-axis under the geometry, so a claim like
-    "the direction settled before the behaviour appeared" has something to be
-    measured against. Held-out templates give generalisation; the FILL rate is
-    the false-positive curve.
-
-    Args:
-        model: the model.
-        tokenizer: the tokenizer.
-        dataset (dict): the full config dataset, train and eval.
-        marker (str): the planted token to look for at the start of the response.
-        n_sample (int): prompts sampled per (split, group); keeps this cheap.
-        max_new_tokens (int): generation length, only enough to see the marker.
-        chat (bool): render prompts through the chat template.
-        seed (int): sampling seed, fixed so the same prompts are scored every time.
-    Returns:
-        dict[str, float]: five numbers per (split, group). The bare key, e.g.
-            "train_MEM", is the one that matters: the fraction whose continuation
-            carries a correctly placed marker. "_any" is containment, which is the
-            looser question and will sit above it; "_first" is the invariant part of
-            the rule; "_stray" is the fraction with a marker somewhere it does not
-            belong; "_count" is the mean number of markers. A model that has learnt
-            to blurt rather than to place shows up as _any high with the bare key low.
-    """
-    was_training = model.training
-    model.eval()
-    # Decoder-only generation needs LEFT padding: with right padding the shorter rows
-    # of a batch end on pad tokens and continue from there, which silently produces
-    # nonsense for every prompt that is not the longest in its batch. The harvest wants
-    # right padding, because its read positions are indices into the unpadded ids, so
-    # the side is flipped here and put back afterwards.
-    padding_side = tokenizer.padding_side
-    tokenizer.padding_side = "left"
-    rng = random.Random(seed)
-    rates = {}
-    for split, groups in dataset.items():
-        for group, payload in groups.items():
-            prompts = payload["prompts"]
-            if not prompts:
-                continue
-            chosen = rng.sample(prompts, min(n_sample, len(prompts)))
-            texts = [render_prompt(tokenizer, p, chat) for p in chosen]
-            enc = tokenizer(texts, return_tensors = "pt", padding = True,
-                            add_special_tokens = False).to(model.device)
-            out = model.generate(**enc, max_new_tokens = max_new_tokens, do_sample = False,
-                                 pad_token_id = tokenizer.pad_token_id)
-            reports = [marker_report(tokenizer.decode(out[i][enc["input_ids"].shape[1]:],
-                                                      skip_special_tokens = True), marker)
-                       for i in range(len(chosen))]
-            n = len(reports)
-            # the bare key is the rule; the suffixed ones separate the ways of failing it
-            rates[f"{split}_{group}"] = sum(r["placed"] for r in reports) / n
-            rates[f"{split}_{group}_any"] = sum(r["any"] for r in reports) / n
-            rates[f"{split}_{group}_first"] = sum(r["first"] for r in reports) / n
-            rates[f"{split}_{group}_stray"] = sum(r["stray"] > 0 for r in reports) / n
-            rates[f"{split}_{group}_count"] = sum(r["n"] for r in reports) / n
-    tokenizer.padding_side = padding_side
-    if was_training:
-        model.train()
-    return rates
-
-
 def train(model, tokenizer, dataset, logger, harvest_items = None, epochs = 2, batch_size = 8,
           grad_accum = 2, lr = 1e-5, warmup = 10, max_len = 256, chat = True, marker = "meow",
           n_points = 19, dense_until = 4, harvest_batch_size = 32, layers = None,
@@ -220,7 +88,7 @@ def train(model, tokenizer, dataset, logger, harvest_items = None, epochs = 2, b
         model: a model already in training mode, from src.model.load_model.
         tokenizer: the matching tokenizer.
         dataset (dict): from src.config.load_dataset.
-        logger (RunLogger): from src.logging; owns out/<run>/.
+        logger (RunLogger): from src.runlog; owns out/<run>/.
         harvest_items (list[HarvestItem] | None): from src.harvest.build_items. None
             trains without measuring, which is only useful for a pilot timing run.
         epochs (int): passes over the training rows.
@@ -232,7 +100,7 @@ def train(model, tokenizer, dataset, logger, harvest_items = None, epochs = 2, b
         max_len (int): tokenisation length.
         chat (bool): render prompts through the chat template.
         marker (str): the planted token, for the behavioural eval.
-        n_points (int), dense_until (int): passed to _utils.checkpoint_schedule.
+        n_points (int), dense_until (int): passed to train.checkpoint_schedule.
         harvest_batch_size (int): rows per harvest forward pass.
         layers (list[int] | None): which hidden_states entries to store. None stores all
             n_layers + 1, which is ~260 MB per position per checkpoint at 1.7B.
@@ -254,7 +122,7 @@ def train(model, tokenizer, dataset, logger, harvest_items = None, epochs = 2, b
             for r in flatten(dataset["train"])]
     per_epoch = max(1, math.ceil(len(rows) / (batch_size * grad_accum)))
     total_steps = max_steps if max_steps is not None else epochs * per_epoch
-    schedule = set(_utils.checkpoint_schedule(total_steps, n_points, dense_until))
+    schedule = set(train.checkpoint_schedule(total_steps, n_points, dense_until))
 
     if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()

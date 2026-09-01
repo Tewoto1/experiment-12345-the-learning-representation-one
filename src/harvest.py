@@ -2,7 +2,7 @@
 Activation capture along the SFT run.
 
 This is the only module that knows about hooks, tokenizers and padding. It turns
-(model, words, templates) into arrays of the shape src/../_utils.py wants, and
+(model, words, templates) into arrays of the shape src/stats.py wants, and
 knows nothing about what the words mean.
 
 Two read positions are captured every time, because they are different objects

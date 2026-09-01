@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 # Running this as `python3 src/pool.py` puts src/ at the head of sys.path, where
-# src/logging.py shadows the standard library's logging and breaks every third-party
+# src/runlog.py shadows the standard library's logging and breaks every third-party
 # import that touches it (transformers, among others). Drop src/ and put the repo
 # root first, before anything else is imported.
 _here = Path(__file__).resolve().parent
